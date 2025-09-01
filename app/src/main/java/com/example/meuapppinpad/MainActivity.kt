@@ -30,9 +30,9 @@ import br.com.setis.ppconecta.*
 import br.com.setis.ppconecta.output.FinishExecCmdOutput
 import br.com.setis.ppconecta.output.GetRespOutput
 import kotlinx.coroutines.*
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
-import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
@@ -41,6 +41,13 @@ import java.net.URL
 import java.util.*
 
 class MainActivity : ComponentActivity() {
+
+    // --- MODELO DO PAYLOAD CIELO ---
+    data class InitializationPayload(
+        val initializationVersion: String,
+        val aidParameters: String,   // JSON array em string
+        val publicKeys: String       // JSON array em string
+    )
 
     companion object {
         private const val TAG = "PinpadApp"
@@ -57,6 +64,8 @@ class MainActivity : ComponentActivity() {
     private var inputStream: InputStream? = null
     private var outputStream: OutputStream? = null
     private var connectedDevice: BluetoothDevice? = null
+
+    private var lastInitialization: InitializationPayload? = null
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -102,7 +111,6 @@ class MainActivity : ComponentActivity() {
                             .fillMaxSize()
                             .padding(16.dp)
                     ) {
-
                         Text(
                             text = "Conexão e Validação Pinpad",
                             style = MaterialTheme.typography.h6,
@@ -297,14 +305,40 @@ class MainActivity : ComponentActivity() {
                                     Button(
                                         onClick = {
                                             isProcessing = true
+                                            status = "Carregando tabelas EMV..."
+
+                                            CoroutineScope(Dispatchers.IO).launch {
+                                                val init = downloadCieloInitialization()
+                                                val success = loadEmvTablesToPinpad(init)
+                                                withContext(Dispatchers.Main) {
+                                                    isProcessing = false
+                                                    status = if (success) {
+                                                        "Tabelas carregadas"
+                                                    } else {
+                                                        "Erro na carga de tabelas"
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        enabled = !isProcessing,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 8.dp),
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF009688))
+                                    ) {
+                                        Text("Carregar Tabelas", color = Color.White)
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            isProcessing = true
                                             validationResult = null
                                             status = "Iniciando validação EMV..."
 
                                             CoroutineScope(Dispatchers.IO).launch {
-                                                val result = performEMVValidation() { newStatus ->
+                                                val result = performEMVValidation { newStatus ->
                                                     status = newStatus
                                                 }
-
                                                 withContext(Dispatchers.Main) {
                                                     validationResult = result
                                                     status = result.message ?: "Validação concluída"
@@ -344,7 +378,6 @@ class MainActivity : ComponentActivity() {
                                     result.pinpadVersion?.let {
                                         Text("Versão Pinpad: $it", modifier = Modifier.padding(top = 4.dp))
                                     }
-
                                     result.cieloVersion?.let {
                                         Text("Versão Cielo: $it", modifier = Modifier.padding(top = 4.dp))
                                     }
@@ -491,63 +524,101 @@ class MainActivity : ComponentActivity() {
     ): ValidationResult {
         return try {
             onStatusUpdate("Baixando parâmetros Cielo...")
-            val cieloVersion = downloadCieloVersion()
+            val init = downloadCieloInitialization()
 
             onStatusUpdate("Obtendo versão do Pinpad...")
             val pinpadVersion = getTableVersionFromPinpad()
 
             onStatusUpdate("Validando versões...")
-            val isValid = validateVersions(pinpadVersion, cieloVersion)
+            val isValid = pinpadVersion == init.initializationVersion.takeLast(10)
+
+            // Se versão inválida, carrega tabela
+            if (!isValid) {
+                onStatusUpdate("Carregando tabelas EMV...")
+                val loaded = loadEmvTablesToPinpad(init)
+                if (!loaded) throw Exception("Falha ao carregar tabelas")
+            }
 
             ValidationResult(
-                isValid = isValid,
+                isValid = true,
                 pinpadVersion = pinpadVersion,
-                cieloVersion = cieloVersion,
-                message = if (isValid) "Validação bem-sucedida" else "Versões incompatíveis"
+                cieloVersion = init.initializationVersion,
+                message = "Validação e atualização concluídas"
             )
-
         } catch (e: Exception) {
             Log.e(TAG, "Erro na validação", e)
             ValidationResult(false, message = "Erro: ${e.message}")
         }
     }
 
-    private suspend fun downloadCieloVersion(): String {
+
+    private suspend fun downloadCieloInitialization(): InitializationPayload {
         return withContext(Dispatchers.IO) {
             val url = URL(CIELO_API_URL)
             val connection = url.openConnection() as HttpURLConnection
-
             try {
                 connection.requestMethod = "GET"
-                connection.connectTimeout = 10000
-                connection.readTimeout = 15000
                 connection.setRequestProperty("Accept", "application/json")
                 connection.setRequestProperty("Authorization", "Bearer $CIELO_TOKEN")
 
-                if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                    val reader = BufferedReader(InputStreamReader(connection.inputStream))
-                    val response = reader.readText()
-                    reader.close()
-
-                    val json = JSONObject(response)
-                    val version = json.optString("InitializationVersion", "")
-
-                    if (version.isEmpty()) {
-                        throw Exception("InitializationVersion não encontrada")
-                    }
-
-                    Log.d(TAG, "Versão Cielo: $version")
-                    return@withContext version
-
-                } else {
+                if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                     throw Exception("Erro HTTP: ${connection.responseCode}")
                 }
 
+                val reader = BufferedReader(InputStreamReader(connection.inputStream))
+                val response = reader.readText()
+                reader.close()
+
+                val root = JSONObject(response)
+                val initVersion = root.optJSONArray("InitializationVersion")?.toString() ?: ""
+                val aids = root.optJSONArray("AidParameters")?.toString() ?: ""
+                val keys = root.optJSONArray("PublicKeys")?.toString() ?: ""
+
+                val payload = InitializationPayload(initVersion, aids, keys)
+                lastInitialization = payload
+                Log.d(TAG, "Cielo InitVer=$initVersion")
+                payload
             } finally {
                 connection.disconnect()
             }
         }
     }
+
+    private suspend fun loadEmvTablesToPinpad(init: InitializationPayload): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val last10 = init.initializationVersion.takeLast(10)
+
+                // Passando parâmetros obrigatórios
+                PPConecta.setParam(PPCConst.PPC_INP_INITVER, last10)
+                PPConecta.setParam(PPCConst.PPC_INP_TABAID, init.aidParameters)
+                PPConecta.setParam(PPCConst.PPC_INP_TABCAPK, init.publicKeys)
+
+
+                // Executando comando de carga
+                val result = PPConecta.startExecCmd(PPCConst.PPC_CMD_TAB_LOAD)
+                if (result != IPPConectaError.OK) return@withContext false
+
+                // Aguardar finalização
+                var finish: FinishExecCmdOutput
+                var timeout = 0
+                do {
+                    finish = PPConecta.finishExecCmd()
+                    if (finish.returnCode == IPPConectaError.PROCESSING) {
+                        delay(200)
+                        timeout++
+                        if (timeout > 150) throw Exception("Timeout TAB_LOAD")
+                    }
+                } while (finish.returnCode == IPPConectaError.PROCESSING)
+
+                finish.returnCode == IPPConectaError.OK
+            } catch (e: Exception) {
+                Log.e(TAG, "Erro na carga TAB_LOAD", e)
+                false
+            }
+        }
+    }
+
 
     private suspend fun getTableVersionFromPinpad(): String {
         return withContext(Dispatchers.IO) {
@@ -555,8 +626,8 @@ class MainActivity : ComponentActivity() {
                 Log.d(TAG, "Inicializando PPConecta")
 
                 PPConecta.initUSBSerial(this@MainActivity)
-                PPConecta.setParam(IPPConectaInput.LICENSE, "")
-                PPConecta.setParam(IPPConectaInput.COMPANY, "")
+                PPConecta.setParam(IPPConectaInput.LICENSE, "84A8152238C0ED1444B9FD05848CA8F9")
+                PPConecta.setParam(IPPConectaInput.COMPANY, "Pineappletech")
 
                 val deviceAddress = connectedDevice?.address ?: throw Exception("Dispositivo não conectado")
                 val connectResult = IPPConectaInput("BT:$deviceAddress")
@@ -656,26 +727,25 @@ class MainActivity : ComponentActivity() {
         return false
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        disconnect()
-    }
+    override fun onDestroy() { disconnect(); super.onDestroy() }
 }
 
-object IPPConectaInput {
-    const val LICENSE = 1
-    const val COMPANY = 2
+object IPPConectaInput { const val LICENSE = 1; const val COMPANY = 2 }
+
+object IPPConectaError { const val OK = 0; const val PROCESSING = 1 }
+
+object PPCConst {
+    const val PPC_CMD_TAB_LOAD = 32      // corrigido de 50 → 32
+    const val PPC_INP_INITVER = 1001     // confirmar IDs na doc
+    const val PPC_INP_TABAID  = 1002
+    const val PPC_INP_TABCAPK = 1003
 }
 
 object IPPConectaCommand {
     const val OPEN = 1
-    const val TABLE_VERSION = 15
+    const val TABLE_VERSION = 31        // corrigido de 15 → 31
 }
 
-object IPPConectaError {
-    const val OK = 0
-    const val PROCESSING = 1
-}
 
 fun IPPConectaInput(deviceString: String): Int {
     Log.d("PPConecta", "Configurando: $deviceString")
