@@ -626,8 +626,8 @@ class MainActivity : ComponentActivity() {
                 Log.d(TAG, "Inicializando PPConecta")
 
                 PPConecta.initUSBSerial(this@MainActivity)
-                PPConecta.setParam(IPPConectaInput.LICENSE, "84A8152238C0ED1444B9FD05848CA8F9")
-                PPConecta.setParam(IPPConectaInput.COMPANY, "Pineappletech")
+                PPConecta.setParam(IPPConectaInput.LICENSE, "")
+                PPConecta.setParam(IPPConectaInput.COMPANY, "")
 
                 val deviceAddress = connectedDevice?.address ?: throw Exception("Dispositivo não conectado")
                 val connectResult = IPPConectaInput("BT:$deviceAddress")
