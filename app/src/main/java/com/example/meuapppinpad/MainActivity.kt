@@ -686,6 +686,7 @@ class MainActivity : ComponentActivity() {
                 Log.d(TAG, "===== Iniciando transação =====")
                 Log.d(TAG, "Valor: $amountCents centavos | Tipo: $apptype")
 
+<<<<<<< HEAD
                 // ---------- Parâmetros obrigatórios GETCARD ----------
                 PPConecta.setParam(PPCConst.PPC_INP_TRNTYPE, "00") // Compra
                 PPConecta.setParam(PPCConst.PPC_INP_APPTYPE, apptype) // "01"=crédito, "02"=débito
@@ -693,6 +694,11 @@ class MainActivity : ComponentActivity() {
                 PPConecta.setParam(PPCConst.PPC_INP_TIMEOUT, "120") // segundos
                 PPConecta.setParam(PPCConst.PPC_INP_DSPMSG, "INSIRA O CARTAO")
                 PPConecta.setParam(PPCConst.PPC_INP_CTLSON, "1") // habilita contactless
+=======
+                PPConecta.initUSBSerial(this@MainActivity)
+                PPConecta.setParam(IPPConectaInput.LICENSE, "")
+                PPConecta.setParam(IPPConectaInput.COMPANY, "")
+>>>>>>> 2cb4e91e12e69ae4ffd721587a445895307c5f8c
 
                 val now = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
                     .format(java.util.Date())
